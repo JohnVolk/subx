@@ -91,7 +91,7 @@ def make_jday_like(da):
 
 
 @vectorize
-def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1):
+def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1, rd_type=1):
     """
     Compute daily ASCE standardized Reference ET from SubX drivers.
 
@@ -106,6 +106,7 @@ def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1):
         jday (float): Day of year
         ref (int):    1 for grass (ETo), 2 for alfalfa (ETr)
         hum_type (int): 1 for specific humidity (kg/kg), 2 for dew point (K)
+        rd_type (int): 1 for shortwave, 2 for net radiation
 
     Returns:
         et (float):   array of ASCE ref. ET
@@ -173,56 +174,58 @@ def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1):
 
     # Solar radiation calculations
 #    logging.debug('solar')
+    if rd_type == 1:
+		# Correction for eccentricity of Earth's orbit around the sun
+		dr = 1. + 0.033 * np.cos(((2. * np.pi) / 365.) * jday)
 
-    # Correction for eccentricity of Earth's orbit around the sun
-    dr = 1. + 0.033 * np.cos(((2. * np.pi) / 365.) * jday)
+		# Declination of the sun above the celestial equator in radians
+		delta = 0.40928 * np.sin(((2. * np.pi) / 365) * jday - 1.39435)
 
-    # Declination of the sun above the celestial equator in radians
-    delta = 0.40928 * np.sin(((2. * np.pi) / 365) * jday - 1.39435)
+		# Sunrise hour angle [r] 
+		#omega = np.arccos(-np.tan(phi) * np.tan(delta))
+		#omega = np.arccos(np.clip(-np.tan(phi) * np.tan(delta), -1, 1))
+		omega = -np.tan(phi) * np.tan(delta)
+		omega = 1. if omega > 1 else omega
+		omega = -1. if omega < -1 else omega
+		omega = np.arccos(omega)
 
-    # Sunrise hour angle [r] 
-    #omega = np.arccos(-np.tan(phi) * np.tan(delta))
-    #omega = np.arccos(np.clip(-np.tan(phi) * np.tan(delta), -1, 1))
-    omega = -np.tan(phi) * np.tan(delta)
-    omega = 1. if omega > 1 else omega
-    omega = -1. if omega < -1 else omega
-    omega = np.arccos(omega)
+		# Angle of sun above horizon
+		theta_24 = (omega * np.sin(phi) * np.sin(delta) +
+		         np.cos(phi) * np.cos(delta) * np.sin(omega))
+		theta_24 = 0.01 if theta_24 <= 0 else theta_24
 
-    # Angle of sun above horizon
-    theta_24 = (omega * np.sin(phi) * np.sin(delta) +
-             np.cos(phi) * np.cos(delta) * np.sin(omega))
-    theta_24 = 0.01 if theta_24 <= 0 else theta_24
+		Ra = (24. / np.pi) * 4.92 * (dr) * theta_24
 
-    Ra = (24. / np.pi) * 4.92 * (dr) * theta_24
+		# Clearness index for direct beam radiation (unitless)
+		kb =\
+		    0.98*np.exp(((-0.00146*pressure)/theta_24)-0.075*(w/theta_24)**0.4)
 
-    # Clearness index for direct beam radiation (unitless)
-    kb =\
-        0.98*np.exp(((-0.00146*pressure)/theta_24)-0.075*(w/theta_24)**0.4)
+		#del w, omega, theta_24
 
-    #del w, omega, theta_24
+		# Transmissivity index for diffuse radiation (unitless)
+		kd = 0.35 - 0.36 * kb
 
-    # Transmissivity index for diffuse radiation (unitless)
-    kd = 0.35 - 0.36 * kb
+		# Clear sky total global solar radiation at the Earth's surface [MJ m-2 d-1]
+		Rso = (kb + kd) * Ra
+		#del Ra, kb, kd
 
-    # Clear sky total global solar radiation at the Earth's surface [MJ m-2 d-1]
-    Rso = (kb + kd) * Ra
-    #del Ra, kb, kd
+		# Net solar radiation [MJ m-2 d-1]
+		Rns = (1. - 0.23) * rd
 
-    # Net solar radiation [MJ m-2 d-1]
-    Rns = (1. - 0.23) * rd
+		# Cloudiness function of rd and Rso
+		f = 1.35 * rd / Rso - 0.35
 
-    # Cloudiness function of rd and Rso
-    f = 1.35 * rd / Rso - 0.35
+		# Apparent "net" clear sky emmissivity
+		net_emiss = 0.34 - 0.14 * np.sqrt(ea)
 
-    # Apparent "net" clear sky emmissivity
-    net_emiss = 0.34 - 0.14 * np.sqrt(ea)
+		# Net longwave radiation [MJ m-2 d-1]
+		Rnl = f * net_emiss * sig * ((tmean + 273.15) ** 4)
 
-    # Net longwave radiation [MJ m-2 d-1]
-    Rnl = f * net_emiss * sig * ((tmean + 273.15) ** 4)
-
-    # Net radiation [MJ m-2 d-1]
-    Rn = Rns - Rnl
-
+		# Net radiation [MJ m-2 d-1]
+		Rn = Rns - Rnl
+	else:
+        Rn = rd
+        
     # Soil heat flux density (G; [MJ m-2 d-1])
     G = 0
 
@@ -244,46 +247,5 @@ def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1):
     et = et_num / et_denom
 
     return et
-
-
-def list_blob_filenames(bucket_name):
-    """List all blob filenames in a Google Storage bucket.
-    Args:
-        bucket_name (str): Name of the bucket
-    Returns:
-        blob_name_list (List[str]): List of full blob filenames
-    """
-    storage_client = storage.Client()
-
-    blobs = storage_client.list_blobs(bucket_name)
-
-    blob_name_list = [blob.name for blob in blobs]
-
-    return blob_name_list
-
-
-def download_blob(bucket_name, source_blob_name, destination_file_name):
-    """Downloads a blob from the bucket."""
-
-    storage_client = storage.Client()
-
-    bucket = storage_client.bucket(bucket_name)
-
-    # Construct a client side representation of a blob.
-    # Note `Bucket.blob` differs from `Bucket.get_blob` as it doesn't retrieve
-    # any content from Google Cloud Storage. As we don't need additional data,
-    # using `Bucket.blob` is preferred here.
-    blob = bucket.blob(source_blob_name)
-    blob.download_to_filename(destination_file_name)
-
-
-def upload_blob(bucket_name, source_file_name, destination_blob_name):
-    """Uploads a file to the bucket."""
-
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-
-    blob.upload_from_filename(source_file_name)
 
 
