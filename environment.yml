@@ -8,3 +8,5 @@ dependencies:
   - numpy>=1.15
   - xarray
   - requests
+  - dask
+  - numba

@@ -91,7 +91,7 @@ def make_jday_like(da):
 
 
 @vectorize
-def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1, rd_type=1):
+def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref, hum_type, rd_type):
     """
     Compute daily ASCE standardized Reference ET from SubX drivers.
 
@@ -109,7 +109,7 @@ def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1, rd_type=1)
         rd_type (int): 1 for shortwave, 2 for net radiation
 
     Returns:
-        et (float):   array of ASCE ref. ET
+        et (float):   array of ASCE ref. ET (mm/day)
     """
 
     # note some lines like print and del commands are commented out for numba
@@ -175,55 +175,55 @@ def asce_refet(tmean, hum_in, rd, u, lat, z, jday, ref=1, hum_type=1, rd_type=1)
     # Solar radiation calculations
 #    logging.debug('solar')
     if rd_type == 1:
-		# Correction for eccentricity of Earth's orbit around the sun
-		dr = 1. + 0.033 * np.cos(((2. * np.pi) / 365.) * jday)
+        # Correction for eccentricity of Earth's orbit around the sun
+        dr = 1. + 0.033 * np.cos(((2. * np.pi) / 365.) * jday)
 
-		# Declination of the sun above the celestial equator in radians
-		delta = 0.40928 * np.sin(((2. * np.pi) / 365) * jday - 1.39435)
+        # Declination of the sun above the celestial equator in radians
+        delta = 0.40928 * np.sin(((2. * np.pi) / 365) * jday - 1.39435)
 
-		# Sunrise hour angle [r] 
-		#omega = np.arccos(-np.tan(phi) * np.tan(delta))
-		#omega = np.arccos(np.clip(-np.tan(phi) * np.tan(delta), -1, 1))
-		omega = -np.tan(phi) * np.tan(delta)
-		omega = 1. if omega > 1 else omega
-		omega = -1. if omega < -1 else omega
-		omega = np.arccos(omega)
+        # Sunrise hour angle [r] 
+        #omega = np.arccos(-np.tan(phi) * np.tan(delta))
+        #omega = np.arccos(np.clip(-np.tan(phi) * np.tan(delta), -1, 1))
+        omega = -np.tan(phi) * np.tan(delta)
+        omega = 1. if omega > 1 else omega
+        omega = -1. if omega < -1 else omega
+        omega = np.arccos(omega)
 
-		# Angle of sun above horizon
-		theta_24 = (omega * np.sin(phi) * np.sin(delta) +
-		         np.cos(phi) * np.cos(delta) * np.sin(omega))
-		theta_24 = 0.01 if theta_24 <= 0 else theta_24
+        # Angle of sun above horizon
+        theta_24 = (omega * np.sin(phi) * np.sin(delta) +
+                 np.cos(phi) * np.cos(delta) * np.sin(omega))
+        theta_24 = 0.01 if theta_24 <= 0 else theta_24
 
-		Ra = (24. / np.pi) * 4.92 * (dr) * theta_24
+        Ra = (24. / np.pi) * 4.92 * (dr) * theta_24
 
-		# Clearness index for direct beam radiation (unitless)
-		kb =\
-		    0.98*np.exp(((-0.00146*pressure)/theta_24)-0.075*(w/theta_24)**0.4)
+        # Clearness index for direct beam radiation (unitless)
+        kb =\
+            0.98*np.exp(((-0.00146*pressure)/theta_24)-0.075*(w/theta_24)**0.4)
 
-		#del w, omega, theta_24
+        #del w, omega, theta_24
 
-		# Transmissivity index for diffuse radiation (unitless)
-		kd = 0.35 - 0.36 * kb
+        # Transmissivity index for diffuse radiation (unitless)
+        kd = 0.35 - 0.36 * kb
 
-		# Clear sky total global solar radiation at the Earth's surface [MJ m-2 d-1]
-		Rso = (kb + kd) * Ra
-		#del Ra, kb, kd
+        # Clear sky total global solar radiation at the Earth's surface [MJ m-2 d-1]
+        Rso = (kb + kd) * Ra
+        #del Ra, kb, kd
 
-		# Net solar radiation [MJ m-2 d-1]
-		Rns = (1. - 0.23) * rd
+        # Net solar radiation [MJ m-2 d-1]
+        Rns = (1. - 0.23) * rd
 
-		# Cloudiness function of rd and Rso
-		f = 1.35 * rd / Rso - 0.35
+        # Cloudiness function of rd and Rso
+        f = 1.35 * rd / Rso - 0.35
 
-		# Apparent "net" clear sky emmissivity
-		net_emiss = 0.34 - 0.14 * np.sqrt(ea)
+        # Apparent "net" clear sky emmissivity
+        net_emiss = 0.34 - 0.14 * np.sqrt(ea)
 
-		# Net longwave radiation [MJ m-2 d-1]
-		Rnl = f * net_emiss * sig * ((tmean + 273.15) ** 4)
+        # Net longwave radiation [MJ m-2 d-1]
+        Rnl = f * net_emiss * sig * ((tmean + 273.15) ** 4)
 
-		# Net radiation [MJ m-2 d-1]
-		Rn = Rns - Rnl
-	else:
+        # Net radiation [MJ m-2 d-1]
+        Rn = Rns - Rnl
+    else:
         Rn = rd
         
     # Soil heat flux density (G; [MJ m-2 d-1])

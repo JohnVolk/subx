@@ -1,1 +1,6 @@
 **/__pycache__
+
+**/dask-worker-space
+*.jpg
+**/gif_data
+*.tar.gz
