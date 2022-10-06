@@ -65,6 +65,8 @@ baseline_model_name = {
     'GMAO_GEOS_V2p1':'GMAO-GEOS_V2p1'
 }
 
+week_end_days = [7,14,21,28]
+
 def wind_spd_u_v(u, v):
     return np.sqrt(u**2 + v**2)
 
@@ -74,10 +76,12 @@ def _chunk_inputs(da, chunk_dict):
 ################### Calculations below
 if __name__ == "__main__":
 
+    print(f'Running forecast ETo weekly anomalies for model: {model}')
+    print('Starting dask client')
     # set up cluster and workers for parallelization
     cluster = LocalCluster(n_workers=8, threads_per_worker=1)
     client = Client(cluster)
-
+    print(f'View dask dashboard at: {client.dashboard_link}')
 
     #### Collect ETo input netCDFs- assumes downloaded to "subx/forecasts/" 
     #### as a result of running download_forecasts.py
@@ -116,13 +120,12 @@ if __name__ == "__main__":
     ##TODO: if check fails skip everything further down
     have_needed_vars = needed_vars.issubset(vars_downloaded)
 
-
     # a check on each variable in needed_vars for the latest date
     var_dates = {}
     for v in needed_vars:
         file_date_strs = download_data.get(model).get(f'{v}_dates')
         var_dates[v] = file_date_strs
-        
+
     # get the oldest date from each variable in case one is not updated
     most_recent_date = max(set.intersection(*map(set,var_dates.values())))
 
@@ -130,6 +133,36 @@ if __name__ == "__main__":
     month = most_recent_date[4:6]
     day = most_recent_date[6:8]
 
+    print(f'Found forecast data starting on {day}/{month}/{year}')
+
+
+    ############# baseline ensemble ETo weekly totals
+    # get week as int [0,3]
+    week = int(day)//7
+
+    print('Loading baseline ETo and computing ensemble mean of weekly sums')
+    # load baseline ETo (local netCDF), pick week that matches start date 
+    baseline_path = Path(
+        f'{baseline_dir}/eto_climo_weekly_v2_'
+        f'{baseline_model_name.get(model, model)}'
+    )
+    baseline_path = list(baseline_path.rglob(f'*_{month}.nc'))[0]
+    base_ds = xr.open_dataset(baseline_path)
+
+    # weekly sum of baseline ETo
+    base_mov_sum_7day = base_ds['eto'].isel(week=week-1).rolling(
+        L=7, min_periods=7).sum()
+
+    base_mov_sum_7day_ens_mean = base_mov_sum_7day.mean(dim='member')
+
+    week_sums = []
+    for end_day in week_end_days:
+        week_sums.append(base_mov_sum_7day_ens_mean.isel(L=end_day))
+
+    base_weekly_sums = xr.concat(week_sums,'L')
+
+
+    print('Computing daily forecasted ETo for all ensemble members')
     # get files using most recent valid date
     input_files = {}
     for v in needed_vars:
@@ -166,7 +199,7 @@ if __name__ == "__main__":
 
     # chunk for dask workers
     for input_var, da in ref_et_input.items():
-        da = da.sel(M=1).isel(S=0) #### TODO: use all the ensemble members
+        da = da.isel(S=0) 
         ref_et_input[input_var] = _chunk_inputs(da,chunks) 
 
     tmean, hum_in, rd, ws, lat, z, jday = tuple(ref_et_input.values())
@@ -181,11 +214,11 @@ if __name__ == "__main__":
         output_dtypes=[np.float32]
     )
 
-    # run ETo- we may rather compute to storage?
+    # compute and load ETo
     da_out.compute()
 
+    print('Calculating forecasted weekly ETo sums and anomalies')
     # Calc weekly (7-day) moving total ETo
-    week_end_days = [7,14,21,28]
     mov_sum_7day = da_out['ETo'].rolling(L=7, min_periods=7).sum()
 
     week_sums = []
@@ -194,29 +227,10 @@ if __name__ == "__main__":
 
     weekly_sums = xr.concat(week_sums,'L')
 
-    # get week as int [0,3]
-    week = int(day)//7
-
-    # load baseline ETo (local netCDF), pick week that matches start date 
-    baseline_path = Path(
-        f'{baseline_dir}/eto_climo_weekly_v2_'
-        f'{baseline_model_name.get(model, model)}'
-    )
-    baseline_path = list(baseline_path.rglob(f'*_{month}.nc'))[0]
-    base_ds = xr.open_dataset(baseline_path)
-
-    # weekly sum of baseline ETo
-    base_mov_sum_7day = base_ds['eto'].isel(member=0,week=week-1).rolling(
-        L=7, min_periods=7).sum()
-
-    week_sums = []
-    for end_day in week_end_days:
-        week_sums.append(base_mov_sum_7day.isel(L=end_day))
-        
-    base_weekly_sums = xr.concat(week_sums,'L')
-
     # anomalies, forecast minus base
     weekly_anomalies = weekly_sums - base_weekly_sums
+
+    weekly_anomalies_ens_mean = weekly_anomalies.mean(dim='M')
 
     # save netCDFs
     if output_data_dir:
@@ -224,17 +238,29 @@ if __name__ == "__main__":
     else: # assume folder name to save netCDFs
         output_data_dir = Path('anomaly_data')
 
+    print(f'Writing output netCDFs to {output_data_dir}')
+
     output_data_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # save ensemble member and ensemble mean anomalies
     out_path = output_data_dir/f'{model}_{most_recent_date}.nc'
     weekly_anomalies.to_netcdf(str(out_path))
 
-    ####TODO: we might want to mask all results above 60 degrees north
+    out_path = output_data_dir/f'{model}_ensemble_mean_{most_recent_date}.nc'
+    weekly_anomalies_ens_mean.to_netcdf(str(out_path))
+
+    plot_path = f'{model}_{most_recent_date}.jpg'
+    print(f'Saving plot to {plot_path}')
     #### Plot anomalies for 4 week forecast and save
-    weekly_anomalies.plot(x="X", y="Y", col="L",col_wrap=2, robust=True,
-                         cbar_kwargs={"label": "ETo anomaly [mm/week]"})
+    weekly_anomalies_ens_mean.plot(
+        x="X", y="Y", col="L",col_wrap=2, robust=True,
+        cbar_kwargs={"label": "ETo anomaly [mm/week]"}
+    )
     f = plt.gcf()
     f.figsize=(10,8)
-    plt.suptitle(f"{model.replace('_','-')}  starting {month}/{day}/{year}", y=1.02)
-    plt.savefig(f'{model}_{most_recent_date}.jpg', bbox_inches='tight')
-
+    plt.suptitle(
+        f"{model.replace('_','-')}  starting {month}/{day}/{year}", y=1.02
+    )
+    plt.savefig(plot_path, bbox_inches='tight')
+    
+    print(f'Finished successfully')
