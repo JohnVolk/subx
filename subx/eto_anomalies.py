@@ -217,6 +217,9 @@ if __name__ == "__main__":
     # compute and load ETo
     da_out.compute()
 
+    Path('ETo_data').mkdir(parents=True, exist_ok=True)
+    da_out.to_netcdf(f'ETo_data/{model}_{most_recent_date}.nc')
+
     print('Calculating forecasted weekly ETo sums and anomalies')
     # Calc weekly (7-day) moving total ETo
     mov_sum_7day = da_out['ETo'].rolling(L=7, min_periods=7).sum()
